@@ -1,0 +1,236 @@
+---
+title: "Covid 19 Project"
+author: "Ryan Masad"
+date: "2023-09-17"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(ggmap)
+library(maps)
+```
+
+## Covid 19 Project
+
+In this project we will be analyzing data for Covid 19 cases across the world. We will start by importing Covid 19 time series data directly from the Johns Hopkins Coronavirus Resource Center Github focused across 4 datasets.
+
+1.  US Cases
+2.  US Deaths
+3.  Global Cases
+4.  Global Deaths
+
+```{r get_urls}
+url_in = "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/"
+file_names = c("time_series_covid19_confirmed_US.csv",  "time_series_covid19_confirmed_global.csv", "time_series_covid19_deaths_US.csv",  "time_series_covid19_deaths_global.csv")
+url_files = str_c(url_in,file_names)
+url_files
+```
+
+### Importing The Data
+
+In the previous step we gathered the urls for loading the data. Now we are pulling them into CSVs.
+
+```{r import_data}
+us_cases = read.csv(url_files[1])
+global_cases = read.csv(url_files[2])
+us_deaths = read.csv(url_files[3])
+global_deaths = read.csv(url_files[4])
+```
+
+### US Cases Data Cleaning
+
+Next we are going to import and clean US Cases. We are only keeping County, State, Country, Combined Key, Date, Lat, Long and cases. We pivot date and cases to be more like a dataset.
+
+```{r us_cases_cleaning}
+us_cases = us_cases %>% 
+  pivot_longer(cols = -c(UID:Combined_Key), 
+                                     names_to = "date", values_to = "cases") %>%
+  select(Admin2, Province_State,Country_Region, Combined_Key, date, Lat, Long_, cases)
+us_cases %>% head(5)
+```
+
+We repeat this for Us_deaths following the same process as above.
+
+```{r us_deaths_cleaning}
+us_deaths = us_deaths %>% 
+  pivot_longer(cols = -c(UID:Population), 
+                                       names_to = "date", values_to = "deaths") %>%
+  select(Admin2, Province_State,Country_Region, Combined_Key, Population, date, Lat, Long_, deaths)
+us_deaths %>% head(5)
+
+```
+
+Next we will join these 2 datasets together, so we can analyze cases and deaths at the same time.
+
+```{r us_combined_cleaning}
+us = full_join(us_cases,us_deaths, by= c("Admin2", "Province_State", "Country_Region", "Combined_Key" , "date", "Lat", "Long_"))
+us$date = as.Date(substr(us$date,2,nchar(us$date)), format = "%m.%d.%y")
+us = us %>% rename(Province = Admin2)
+us %>% head(5)
+summary(us)
+```
+
+### US Totals Analysis
+
+Here we will start analyzing the data for US cases. I am going to start by creating a simple trends analysis. We will look cases across the US. This lets us circle in on Cases per day and when we spiked.
+
+```{r us_totals}
+us_totals = us %>% 
+  group_by(Country_Region, date) %>%
+  summarise(cases = sum(cases), deaths = sum(deaths), population = max(Population)) %>%
+  
+  mutate(cases_pm = cases/population*1000000) %>%
+  mutate(deaths_pm = deaths/population*1000000) %>%
+  mutate(daily_cases = cases-lag(cases)) %>%
+  mutate(daily_deaths = deaths-lag(deaths)) %>%
+  mutate(cases_per_thou = daily_cases/population*1000) %>%
+  mutate(deaths_per_thou = daily_deaths/population*1000)
+us_totals %>% head(5)
+```
+
+```{r us_totals_plot2, echo=FALSE}
+us_totals %>%
+  filter(daily_cases>0) %>%
+  ggplot(aes(x=date, y=daily_cases)) +
+  geom_line(aes(color = "daily_cases")) + 
+  geom_point(aes(color="daily_cases")) +
+  geom_line(aes(y=daily_deaths, color="daily_death")) + 
+  geom_point(aes(y=daily_deaths, color="daily_deaths")) +
+  theme(legend.position = "bottom", axis.text.x=element_text(angle = 90)) +
+  labs(title="Covid19 Cases in US")
+
+```
+
+### Model
+
+Next we will perform a simple linear model to look at the correlation between cases and deaths. We converted the cases and deaths into cases per though people per day to make the numbers a ratio to add scale to the problem.
+
+```{r us_totals_model}
+mod= lm(deaths_per_thou ~ cases_per_thou, data = us_totals)
+summary(mod)
+
+x_grid = seq(1,151)
+```
+
+
+## Global Cases Data Cleaning
+
+Here we will repeat the cleaning done previously. We will clean the data for global cases and deaths.
+
+```{r global_cases_cleaning}
+global_cases = global_cases %>% 
+  pivot_longer(cols = -c(Province.State:Long), 
+               names_to = "date", values_to = "cases") %>% 
+  select(Province.State, Country.Region, date, Lat, Long , cases)
+global_cases %>% head(5)
+```
+
+```{r global_deaths_cleaning}
+global_deaths = global_deaths %>% 
+  pivot_longer(cols = -c(Province.State:Long),
+               names_to = "date", values_to = "deaths") %>% 
+  select(Province.State, Country.Region, date, Lat, Long , deaths)
+global_deaths %>% head(5)
+```
+
+After doing initial cleaning, Global is missing population information, so we are going to get it.
+
+```{r global_population_data, echo=FALSE}
+global_population = read.csv("https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/UID_ISO_FIPS_LookUp_Table.csv")
+global_population = global_population %>% select(Admin2,Province_State, Country_Region, Combined_Key, Population)
+global_population = global_population %>% rename(Country.Region = Country_Region, Province.State= Province_State)
+global_population %>% head(5)
+```
+
+Here we are joining the 2 global datasets + the Population Dataset and cleaning up date to remove X and format as a date.
+
+```{r global_combined_cleaning}
+global = full_join(global_cases,global_deaths, by= c("Province.State", "Country.Region", "date", "Lat", "Long"))
+global = left_join(global,global_population, by= c("Province.State", "Country.Region"))
+
+global$date = as.Date(substr(global$date,2,nchar(global$date)), format = "%m.%d.%y")
+global = global %>% rename(Province = Admin2, Province_State = Province.State, Country_Region = Country.Region)
+global %>% head(5)
+```
+
+
+### Global Cases Analysis
+
+We will do a similar analysis to see how global cases trended. One thing to note is there are a few more spikes then the US dataset due to different countries having spikes at different times.
+
+```{r global_totals}
+global_totals = global %>% 
+  group_by(date) %>%
+  summarise(cases = sum(cases), deaths = sum(deaths)) %>%
+  mutate(daily_cases = cases-lag(cases)) %>%
+  mutate(daily_deaths = deaths-lag(deaths))
+global_totals %>% head(5)
+```
+
+```{r global_totals_plot, echo=FALSE}
+global_totals %>%
+  filter(daily_cases>0) %>%
+  ggplot(aes(x=date, y=daily_cases)) +
+  geom_line(aes(color = "daily_cases")) + 
+  geom_point(aes(color="daily_cases")) +
+  theme(legend.position = "bottom", axis.text.x=element_text(angle = 90)) +
+  labs(title="Covid19 Cases World Wide")
+
+```
+
+
+### Analysis by Country
+
+Next we will look at global cases by Country. I decided to focus on the top 2 countries to make sure the graphs are still legible. This allows us to see hotspots of cases.
+
+```{r global_totals_by_country}
+country_totals = global %>% 
+  group_by(Country_Region, Lat, Long) %>%
+  summarise(cases = max(cases), deaths = max(deaths), population = max(Population)) %>%
+  mutate(cases_pm = cases/population*1000000) %>%
+  mutate(deaths_pm = deaths/population*1000000)
+country_totals %>% head(5)
+```
+
+```{r global_map_top20, echo=FALSE}
+
+top_20_countries = country_totals %>%
+  arrange(desc(cases)) %>%
+  head(20)
+
+# Create a world map
+world_map = map_data("world")
+
+# Plot the world map
+ggplot() +
+  geom_polygon(data = world_map, aes(x = long, y = lat, group = group), fill = "white", color = "black") +
+  geom_point(data = top_20_countries, aes(x = Long, y = Lat, size = cases_pm, color = cases_pm), alpha = 0.6) +
+  scale_size_continuous(range = c(1, 30)) +
+  scale_color_continuous(low = "yellow", high = "red") +
+  labs(title = "COVID-19 Cases for top 20 Country", x = "Longitude", y = "Latitude") +
+  theme_classic() + 
+  theme(legend.position = "none", axis.title = element_blank(), axis.text = element_blank(), axis.line = element_blank())
+```
+
+```{r global_bar_top20, echo=FALSE}
+
+country_totals %>% 
+  arrange(desc(cases)) %>%
+  head(20) %>%
+  ggplot(aes(x = reorder(Country_Region, -cases), y = cases )) +
+  geom_bar(stat = "identity", position = "dodge") +
+  ggtitle("COVID-19 Cases Top 50",) +
+  xlab("Countries") +
+  ylab("Cases") +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 90, hjust=1))
+```
+
+
+## Conclusion
+
+In conclusion, after this precursory analysis of Covid 19 cases, I have a better understanding of where spikes occurred and what countries had the most cases. One are of bias is that this dataset depends on reporting accuracy. There is no guarantee that every country reports accurately. Another issue is that because it is based off people testing, it depends on how much a country tested. this means that cases could be worse in other countries because of under reporting.
